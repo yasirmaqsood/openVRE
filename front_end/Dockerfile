@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y libmcrypt-dev \
     && docker-php-ext-install gd 
 
 RUN apt-get update && apt-get install gnupg curl
-RUN curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc |gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
+RUN curl -fsSL https://pgp.mongodb.com/server-7.0.asc |gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
 RUN echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] http://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list
 RUN apt-get update
 RUN apt-get install -y mongodb-org
@@ -40,8 +40,10 @@ ADD openVRE /var/www/html/openVRE
 RUN cd openVRE
 WORKDIR /var/www/html/openVRE
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-RUN composer self-update
-RUN composer update --ignore-platform-req=ext-mongodb --ignore-platform-req=ext-mongodb
+# Network in target environments can be unstable; vendor is pre-seeded.
+# Keep composer install step but skip remote self-update/dependency resolution at build time.
+# RUN composer self-update
+# RUN composer update --ignore-platform-req=ext-mongodb --ignore-platform-req=ext-mongodb
 RUN mkdir logs
 RUN touch logs/application.log
 RUN chmod -R 777 logs/application.log
