@@ -5,9 +5,9 @@
 #
 
 
-function execJob($workDir, $shFile, $queue, $cpus = 1, $mem = 0, $logFile = "job_output.log", $errFile = "job_error.log")
+function execJob($workDir, $shFile, $queue, $cpus = 1, $mem = 0, $logFile = "job_output.log", $errFile = "job_error.log", $launcherType = "SGE", $toolId = "", $jobOptions = array())
 {
-    logger("Start job submission via SGE");
+    logger("Start job submission via " . $launcherType);
 
     if (!isset($_SESSION['User']['id'])) {
         $_SESSION['errorData']['Error'][] = "User ID not found in session.";
@@ -35,11 +35,14 @@ function execJob($workDir, $shFile, $queue, $cpus = 1, $mem = 0, $logFile = "job
 
 
     $queue   = (isset($queue) ? $queue : $GLOBALS['queueTask']);
-    $jobname = $_SESSION['User']['id'] . "#" . basename($shFile);
+    $jobname = $_SESSION['User']['id'] . "#" . ($toolId ?: basename($shFile));
 
-    //
-    // Start SGE process
-    $process = new ProcessSGE($shFile, $workDir, $queue, $jobname, $cpus, $mem, $logFile, $errFile);
+    if ($launcherType === "kubernetes_native") {
+        require_once __DIR__ . "/classes/ProcessK8s.php";
+        $process = new ProcessK8s($shFile, $workDir, $queue, $jobname, $cpus, $mem, $logFile, $errFile, $jobOptions);
+    } else {
+        $process = new ProcessSGE($shFile, $workDir, $queue, $jobname, $cpus, $mem, $logFile, $errFile);
+    }
 
     $pid = $process->getPid();
 
@@ -51,7 +54,7 @@ function execJob($workDir, $shFile, $queue, $cpus = 1, $mem = 0, $logFile = "job
     }
 
     error_log("Process started successfully: PID = $pid");
-    logger("The process $cmd is currently running PID = $pid");
+    logger("The process is currently running PID = $pid");
     return array($pid, "");
 }
 
@@ -123,15 +126,22 @@ function getRunningJobInfo($pid, $launcherType = NULL, $cloudName = "local")
 
     // guess launcher
     if (!$launcherType) {
-        if (is_numeric($pid))
+        if (is_numeric($pid)) {
             $launcherType = "SGE";
-        else
+        } elseif (strpos((string)$pid, "-") !== false) {
+            $launcherType = "kubernetes_native";
+        } else {
             $launcherType = "PMES";
+        }
     }
 
     // create new jobProcess
     if ($launcherType == "SGE" || $launcherType == "docker_SGE") {
         $process = new ProcessSGE();
+        $job = $process->getRunningJobInfo($pid);
+    } elseif ($launcherType == "kubernetes_native") {
+        require_once __DIR__ . "/classes/ProcessK8s.php";
+        $process = new ProcessK8s();
         $job = $process->getRunningJobInfo($pid);
     } elseif ($launcherType == "PMES") {
         $process = new ProcessPMES($cloudName);
@@ -277,6 +287,8 @@ function delJob($pid, $launcherType = NULL, $cloudName = "local", $login = NULL)
     if (!$launcherType) {
         if (is_numeric($pid)) {
             $launcherType = "docker_SGE";
+        } elseif (strpos((string)$pid, "-") !== false) {
+            $launcherType = "kubernetes_native";
         } else {
             $launcherType = "PMES";
         }
@@ -294,6 +306,10 @@ function delJob($pid, $launcherType = NULL, $cloudName = "local", $login = NULL)
             updateLogFromJobInfo($jobInfo['log'], $pid, $launcherType, $cloudName);
             // Add any other file redirection logic here
         }
+    } elseif ($launcherType == "kubernetes_native") {
+        require_once __DIR__ . "/classes/ProcessK8s.php";
+        $processK8s = new ProcessK8s();
+        list($r_sge, $msg_sge) = $processK8s->stop($pid);
     } elseif ($launcherType == "PMES") {
         $process = new ProcessPMES();
         $r = $process->stop($pid);

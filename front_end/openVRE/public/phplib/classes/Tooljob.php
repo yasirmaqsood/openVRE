@@ -92,6 +92,7 @@ class Tooljob
 		switch ($this->launcher) {
 			case "SGE":
 			case "docker_SGE":
+			case "kubernetes_native":
 				$this->root_dir_virtual = $GLOBALS['clouds'][$this->cloudName]['dataDir_virtual'] . "/" . $_SESSION['User']['id'];
 				$this->root_dir_mug     = $GLOBALS['clouds'][$this->cloudName]['dataDir_virtual'];
 				$this->pub_dir_virtual  = $GLOBALS['clouds'][$this->cloudName]['pubDir_virtual'];
@@ -679,8 +680,45 @@ class Tooljob
 			//Validate out_files against tool document
 			//TODO
 
+			// Normalize stageout shape: some runners return output_files as a list.
+			// Use logical output name as key to avoid numeric keys (0,1,2...) that
+			// later break output registration and cause "File 0 not found".
+			$normalizedName = $out_name;
+			if (is_array($info) && isset($info['name']) && is_string($info['name']) && $info['name'] !== "") {
+				$normalizedName = $info['name'];
+			}
+
+			// Normalize flat runner output schema to OpenVRE legacy schema.
+			// Runner often emits:
+			// {name, type, file_path, data_type, file_type, meta_data}
+			// while downstream OpenVRE code expects:
+			// {name, required, allow_multiple, file:{file_path,data_type,file_type,meta_data}}
+			if (is_array($info) && !isset($info['file']) && isset($info['file_path'])) {
+				$absPath = (string)$info['file_path'];
+				$relPath = $absPath;
+				if (isset($GLOBALS['dataDir']) && is_string($GLOBALS['dataDir']) && $GLOBALS['dataDir'] !== "") {
+					$prefix = rtrim($GLOBALS['dataDir'], "/") . "/";
+					if (strpos($absPath, $prefix) === 0) {
+						$relPath = substr($absPath, strlen($prefix));
+					}
+				}
+				$info = array(
+					'name' => $normalizedName,
+					'required' => isset($info['required']) ? (bool)$info['required'] : false,
+					'allow_multiple' => isset($info['allow_multiple']) ? (bool)$info['allow_multiple'] : false,
+					'path' => $relPath,
+					'parentDir' => dirname($relPath),
+					'file' => array(
+						'file_path' => $absPath,
+						'data_type' => $info['data_type'] ?? null,
+						'file_type' => $info['file_type'] ?? null,
+						'meta_data' => $info['meta_data'] ?? array()
+					)
+				);
+			}
+
 			//Add output file metadata
-			$this->stageout_data['output_files'][$out_name] = $info;
+			$this->stageout_data['output_files'][$normalizedName] = $info;
 		}
 
 		return 1;
@@ -888,6 +926,17 @@ class Tooljob
 						return 0;
 					}
 
+					break;
+
+				case "kubernetes_native":
+					$cmd = $this->setBashCmd_SGE($tool);
+					if (!$cmd) {
+						return 0;
+					}
+					$submissionFilename = $this->createSubmitFile_SGE($cmd);
+					if (!is_file($submissionFilename)) {
+						return 0;
+					}
 					break;
 
 				case "PMES":
@@ -1123,6 +1172,46 @@ class Tooljob
 	}
 
 
+	/**
+	 * Resolves placeholder values in container_env.
+	 * Supports:
+	 *   SESSION:path.to.key - reads from $_SESSION['path']['to']['key'] (e.g. userToken.access_token)
+	 *   ENV:VAR_NAME - reads from getenv('VAR_NAME')
+	 * Otherwise returns the value as-is.
+	 *
+	 * @param mixed $value The placeholder or literal value
+	 * @return string|null The resolved value, or null if resolution fails/empty
+	 */
+	protected function resolveEnvPlaceholder($value)
+	{
+		if (!is_string($value) || trim($value) === '') {
+			return is_string($value) ? $value : null;
+		}
+		$value = trim($value);
+
+		if (strpos($value, 'SESSION:') === 0) {
+			$path = substr($value, 8);
+			$keys = explode('.', $path);
+			$ref = &$_SESSION;
+			foreach ($keys as $key) {
+				if (!is_array($ref) || !array_key_exists($key, $ref)) {
+					return null;
+				}
+				$ref = &$ref[$key];
+			}
+			return (is_string($ref) || is_numeric($ref)) ? (string) $ref : null;
+		}
+
+		if (strpos($value, 'ENV:') === 0) {
+			$varName = trim(substr($value, 4));
+			$envVal = getenv($varName);
+			return $envVal !== false ? $envVal : null;
+		}
+
+		return $value;
+	}
+
+
 	protected function setBashCommandDockerSge($tool)
 	{
 		if (!isset($tool['infrastructure']['executable']) && !isset($tool['infrastructure']['container_image'])) {
@@ -1134,14 +1223,23 @@ class Tooljob
 		$timestamp = date('Y-m-d_H-i-s');
 		$this->containerName = $tool['infrastructure']['container_image'] . "_" . $_SESSION['User']['id'] . "_" . $timestamp;
 		$cmd_envs = "";
+		//if (isset($tool['infrastructure']['container_env']) && is_array($tool['infrastructure']['container_env'])) {
 		foreach ($tool['infrastructure']['container_env'] as $env_key => $env_value) {
-			$cmd_envs .= "-e $env_key=$env_value ";
+		//		$resolved = $this->resolveEnvPlaceholder($env_value);
+		//		if ($resolved === null || $resolved === '') {
+		//			continue;
+		//		}
+		//		$cmd_envs .= "-e " . $env_key . "=" . escapeshellarg($resolved) . " ";
+			$cmd_envs .= "-e $env_key=$env_value ";		
+		//	}
 		}
 
-		foreach ($tool['infrastructure']['volumes'] as $hostDir => $containerDir) {
-			$userHomeDir = $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" . "/" . $this->project;
-			$cmd_envs .= "-v $userHomeDir" . "$hostDir:$containerDir ";
-		}
+		//if (isset($tool['infrastructure']['volumes']) && is_array($tool['infrastructure']['volumes'])) {
+			foreach ($tool['infrastructure']['volumes'] as $hostDir => $containerDir) {
+				$userHomeDir = $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" . "/" . $this->project;
+				$cmd_envs .= "-v $userHomeDir" . "$hostDir:$containerDir ";
+			}
+		//}
 
 		if ($tool['infrastructure']['interactive']) {
 			if ($tool['infrastructure']['docker_type'] == "compose") {
@@ -1156,13 +1254,31 @@ class Tooljob
 				" --out_metadata "   . $this->stageout_file_virtual .
 				" --log_file "       . $this->log_file_virtual;
 
+			// For kubernetes_native, ProcessK8s already launches an isolated pod/job image.
+			// Run tool executable directly there (no nested udocker/docker dependency).
+			if (isset($this->launcher) && $this->launcher === "kubernetes_native") {
+				return $cmd_vre;
+			}
 
-			$cmd =  "docker run --privileged -v /var/run/docker.sock:/var/run/docker.sock -d" .
-				" " . $cmd_envs .
-				"--memory=" . $tool['infrastructure']['memory']. "g" .
-				" -v " . $this->pub_dir_volumes . ":" . $GLOBALS['shared'] . "public_tmp/ " .
-				" -v " . $this->root_dir_volumes . ":" . $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" .
-				" " . $tool['infrastructure']['container_image'] . " $cmd_vre";
+
+			$useUdocker = (isset($tool['infrastructure']['container_engine']) && $tool['infrastructure']['container_engine'] == "udocker")
+				|| getenv('USE_UDOCKER');
+			if ($useUdocker) {
+				$udockerBin = getenv('UDOCKER_BIN') ?: "udocker";
+				$udockerOpts = getenv('UDOCKER_OPTS') ?: "--rm";
+				$cmd = "$udockerBin run $udockerOpts" .
+					" " . $cmd_envs .
+					" -v " . $this->pub_dir_volumes . ":" . $GLOBALS['shared'] . "public_tmp/ " .
+					" -v " . $this->root_dir_volumes . ":" . $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" .
+					" " . $tool['infrastructure']['container_image'] . " $cmd_vre";
+			} else {
+				$cmd =  "docker run --privileged -v /var/run/docker.sock:/var/run/docker.sock -d" .
+					" " . $cmd_envs .
+					"--memory=" . $tool['infrastructure']['memory']. "g" .
+					" -v " . $this->pub_dir_volumes . ":" . $GLOBALS['shared'] . "public_tmp/ " .
+					" -v " . $this->root_dir_volumes . ":" . $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" .
+					" " . $tool['infrastructure']['container_image'] . " $cmd_vre";
+			}
 		}
 
 		return $cmd;
@@ -1531,6 +1647,7 @@ class Tooljob
 			case "SGE":
 			case "ega_demo":
 			case "docker_SGE":
+			case "kubernetes_native":
 				return $this->enqueue($tool);
 			case "PMES":
 				return $this->callPMES();
@@ -1555,14 +1672,34 @@ class Tooljob
 		$queue = $launcherInfo['queue'] ?? $tool['infrastructure']['clouds'][$this->cloudName]['queue'];
 		logger("Resolved Parameters: Queue=$queue, CPUs=$cpus, Memory=$memory");
 
-		list($pid, $errMesg) = execJob($this->working_dir, $this->submission_file, $queue, $cpus, $memory,  $this->stdout_file, $this->stderr_file);
+		$launcherType = $this->getLauncher_Info($this->cloudName)['launcher']['job_manager'] ?? $tool['infrastructure']['clouds'][$this->cloudName]['launcher'];
+		$jobOptions = array();
+		if ($launcherType === "kubernetes_native") {
+			$jobOptions["mode"] = "native";
+			$jobOptions["image"] = $tool['infrastructure']['container_image'] ?? "";
+			if ($jobOptions["image"] === "") {
+				$_SESSION['errorData']['Error'][] = "Missing infrastructure.container_image for kubernetes_native launcher.";
+				return 0;
+			}
+			$jobOptions["env"] = array();
+			if (isset($tool['infrastructure']['container_env']) && is_array($tool['infrastructure']['container_env'])) {
+				foreach ($tool['infrastructure']['container_env'] as $env_key => $env_value) {
+					$resolved = $this->resolveEnvPlaceholder($env_value);
+					if ($resolved === null || $resolved === '') {
+						continue;
+					}
+					$jobOptions["env"][$env_key] = (string)$resolved;
+				}
+			}
+		}
+		list($pid, $errMesg) = execJob($this->working_dir, $this->submission_file, $queue, $cpus, $memory,  $this->stdout_file, $this->stderr_file, $launcherType, $this->toolId, $jobOptions);
 		if (!$pid) {
-			log_addError($pid, $errMesg, NULL, $this->toolId, $this->cloudName, "SGE", $cpus, $memory);
+			log_addError($pid, $errMesg, NULL, $this->toolId, $this->cloudName, $launcherType, $cpus, $memory);
 			$_SESSION['errorData']['Error'][] = "Internal error. Cannot enqueue job.";
 			return 0;
 		}
-		logger("USER:" . $_SESSION['User']['_id'] . ", ID:" . $_SESSION['User']['id'] . ", LAUNCHER:SGE, TOOL:" . $this->toolId . ", PID:$pid");
-		log_addSubmission($pid, $this->toolId, $this->cloudName, "SGE", $cpus, $memory, $this->working_dir);
+		logger("USER:" . $_SESSION['User']['_id'] . ", ID:" . $_SESSION['User']['id'] . ", LAUNCHER:" . $launcherType . ", TOOL:" . $this->toolId . ", PID:$pid");
+		log_addSubmission($pid, $this->toolId, $this->cloudName, $launcherType, $cpus, $memory, $this->working_dir);
 
 		$this->pid = $pid;
 		return $pid;
