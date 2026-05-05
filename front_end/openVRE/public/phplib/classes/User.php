@@ -24,6 +24,9 @@ class User
             return 0;
         }
 
+        if (!isset($_SESSION['userToken']) && $type != UserType::Guest->value) {
+            return 0;
+        }
 
         $this->Type = $type ?? UserType::Registered->value; // TODO: check if this is ok
         $this->Email = sanitizeString($email);

@@ -83,7 +83,7 @@ function createUserFromToken($login, $token, $jwt, $userinfo = array(), $anonID 
         $_SESSION['tokenInfo'] = $userinfo;
     }
 
-    $objUser = new User($userAttributes['Email'], $userAttributes['secretsId'], $userAttributes['Surname'], $userAttributes['Name'], "", $userAttributes['Type'], "", "", $userAttributes['AuthProvider'], uniqid("__PROJ"), $userAttributes['JWT']);
+    $objUser = new User($userAttributes['Email'], $userAttributes['secretsId'], $userAttributes['Surname'], $userAttributes['Name'], "", $userAttributes['Type'], "", "", $userAttributes['AuthProvider'], "", $userAttributes['JWT']);
     if (!$objUser) {
         return false;
     }
