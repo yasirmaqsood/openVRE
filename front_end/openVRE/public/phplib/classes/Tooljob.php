@@ -1255,23 +1255,12 @@ class Tooljob
 				" --log_file "       . $this->log_file_virtual;
 
 			// For kubernetes_native, ProcessK8s already launches an isolated pod/job image.
-			// Run tool executable directly there (no nested udocker/docker dependency).
 			if (isset($this->launcher) && $this->launcher === "kubernetes_native") {
 				return $cmd_vre;
 			}
 
 
-			$useUdocker = (isset($tool['infrastructure']['container_engine']) && $tool['infrastructure']['container_engine'] == "udocker")
-				|| getenv('USE_UDOCKER');
-			if ($useUdocker) {
-				$udockerBin = getenv('UDOCKER_BIN') ?: "udocker";
-				$udockerOpts = getenv('UDOCKER_OPTS') ?: "--rm";
-				$cmd = "$udockerBin run $udockerOpts" .
-					" " . $cmd_envs .
-					" -v " . $this->pub_dir_volumes . ":" . $GLOBALS['shared'] . "public_tmp/ " .
-					" -v " . $this->root_dir_volumes . ":" . $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" .
-					" " . $tool['infrastructure']['container_image'] . " $cmd_vre";
-			} else {
+			else {
 				$cmd =  "docker run --privileged -v /var/run/docker.sock:/var/run/docker.sock -d" .
 					" " . $cmd_envs .
 					"--memory=" . $tool['infrastructure']['memory']. "g" .
