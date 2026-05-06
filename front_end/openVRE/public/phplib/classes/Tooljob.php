@@ -1223,23 +1223,14 @@ class Tooljob
 		$timestamp = date('Y-m-d_H-i-s');
 		$this->containerName = $tool['infrastructure']['container_image'] . "_" . $_SESSION['User']['id'] . "_" . $timestamp;
 		$cmd_envs = "";
-		//if (isset($tool['infrastructure']['container_env']) && is_array($tool['infrastructure']['container_env'])) {
 		foreach ($tool['infrastructure']['container_env'] as $env_key => $env_value) {
-		//		$resolved = $this->resolveEnvPlaceholder($env_value);
-		//		if ($resolved === null || $resolved === '') {
-		//			continue;
-		//		}
-		//		$cmd_envs .= "-e " . $env_key . "=" . escapeshellarg($resolved) . " ";
 			$cmd_envs .= "-e $env_key=$env_value ";		
-		//	}
 		}
 
-		//if (isset($tool['infrastructure']['volumes']) && is_array($tool['infrastructure']['volumes'])) {
-			foreach ($tool['infrastructure']['volumes'] as $hostDir => $containerDir) {
-				$userHomeDir = $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" . "/" . $this->project;
-				$cmd_envs .= "-v $userHomeDir" . "$hostDir:$containerDir ";
-			}
-		//}
+		foreach ($tool['infrastructure']['volumes'] as $hostDir => $containerDir) {
+			$userHomeDir = $GLOBALS['shared'] . "userdata_tmp/{$_SESSION['User']['id']}" . "/" . $this->project;
+			$cmd_envs .= "-v $userHomeDir" . "$hostDir:$containerDir ";
+		}
 
 		if ($tool['infrastructure']['interactive']) {
 			if ($tool['infrastructure']['docker_type'] == "compose") {
